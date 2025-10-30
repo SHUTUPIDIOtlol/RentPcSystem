@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Ray's Rent System</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Material Design styles -->
+  <link href="https://cdn.jsdelivr.net/npm/@mdi/font/css/materialdesignicons.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/materialize-css@1.0.0/dist/css/materialize.min.css" rel="stylesheet">
+  <style>
+    body {
+      background-color: #fafafa;
+      margin: 0;
+      padding: 20px;
+    }
+    .container {
+      max-width: 400px;
+      margin: auto;
+      background: white;
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 3px 8px rgba(0,0,0,0.1);
+    }
+    .status {
+      font-weight: bold;
+      text-align: center;
+      margin-bottom: 10px;
+    }
+    .timer {
+      font-size: 2em;
+      text-align: center;
+      margin: 10px 0;
+    }
+    .pause-msg {
+      text-align: center;
+      color: gray;
+    }
+    textarea {
+      width: 100%;
+      min-height: 100px;
+      resize: none;
+      font-size: 0.9em;
+    }
+    .btn {
+      width: 100%;
+      margin-top: 5px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <p class="grey-text text-darken-1" style="font-size: 0.9em;">⚠️ If it's offline, make sure to run the timer on the PC!</p>
+
+    <div class="status" id="status_label">Status: Connecting...</div>
+    <div class="timer" id="timer">Time: Loading...</div>
+    <div class="pause-msg" id="pause_msg"></div>
+
+    <p id="pause_history_label" style="font-size:0.8em; color:gray;">Pause History:<br></p>
+
+    <button class="btn blue" onclick="send('add_time', {minutes:10})">Add 10 Minutes</button>
+
+    <div class="row">
+      <div class="input-field col s7">
+        <input id="minInput" type="number" min="0">
+        <label for="minInput">Set Minutes</label>
+      </div>
+      <div class="col s5">
+        <button class="btn" onclick="setManual('minutes')">Set</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="input-field col s7">
+        <input id="hourInput" type="number" min="0">
+        <label for="hourInput">Set Hours</label>
+      </div>
+      <div class="col s5">
+        <button class="btn" onclick="setManual('hours')">Set</button>
+      </div>
+    </div>
+
+    <hr/>
+
+    <button class="btn green" onclick="send('set_money', {option:'250'})">💵 250 IQD → 1 Hour</button>
+    <button class="btn green darken-2" onclick="send('set_money', {option:'500'})">💰 500 IQD → 3 Hours</button>
+
+    <hr/>
+
+    <button class="btn orange" onclick="send('pause')">⏸ Pause</button>
+    <button class="btn teal" onclick="unpause()">▶️ Unpause</button>
+    <button class="btn red" onclick="send('reset')">🔁 Reset Timer</button>
+  </div>
+
+  <script>
+    const SERVER_IP = "http://192.168.0.107:5000"; // change this to your Flask IP
+
+    let lastPauseMsg = "";
+    let pauseHistory = [];
+    let notifiedEnd = false;
+    let statusOnline = false;
+
+    async function send(route, data={}) {
+      try {
+        await fetch(`${SERVER_IP}/${route}`, {
+          method: "POST",
+          headers: {"Content-Type": "application/x-www-form-urlencoded"},
+          body: new URLSearchParams(data)
+        });
+      } catch {
+        document.getElementById("status_label").innerText = "Status: Offline";
+      }
+    }
+
+    async function setManual(mode) {
+      const minInput = document.getElementById("minInput").value;
+      const hourInput = document.getElementById("hourInput").value;
+      if (mode === "minutes" && minInput) send("set_time", {minutes: minInput});
+      if (mode === "hours" && hourInput) send("set_time", {minutes: parseInt(hourInput) * 60});
+    }
+
+    async function unpause() {
+      try {
+        await fetch(`${SERVER_IP}/add_time`, {
+          method: "POST",
+          headers: {"Content-Type": "application/x-www-form-urlencoded"},
+          body: "minutes=0"
+        });
+      } catch {
+        document.getElementById("status_label").innerText = "Status: Offline";
+      }
+    }
+
+    async function updateTime() {
+      try {
+        const timeRes = await fetch(`${SERVER_IP}/get_remaining_time`);
+        const timeJson = await timeRes.json();
+        const remaining = timeJson.remaining;
+
+        document.getElementById("timer").innerText = `Time: ${remaining}`;
+        document.getElementById("status_label").innerText = "Status: Running";
+
+        const pauseRes = await fetch(`${SERVER_IP}/get_pause_requests`);
+        const pauseJson = await pauseRes.json();
+        const requests = pauseJson.requests || [];
+
+        if (requests.length) {
+          const lastReq = requests[requests.length - 1];
+          if (lastReq !== lastPauseMsg) {
+            lastPauseMsg = lastReq;
+            const timestamp = new Date().toLocaleTimeString();
+            pauseHistory.push(`[${timestamp}] "${lastReq}"`);
+            document.getElementById("pause_history_label").innerText = "Pause History:\n" + pauseHistory.join("\n");
+            alert(`Pause request: "${lastReq}"`);
+          }
+          document.getElementById("pause_msg").innerText = `Pause request: "${lastReq}"`;
+        } else {
+          document.getElementById("pause_msg").innerText = "";
+        }
+
+        if ((remaining === "0s" || remaining === "0m") && !notifiedEnd) {
+          alert("⏰ Time Over! The client's time is over.");
+          notifiedEnd = true;
+        } else if (remaining !== "0s" && remaining !== "0m") {
+          notifiedEnd = false;
+        }
+
+        statusOnline = true;
+      } catch (e) {
+        if (statusOnline) {
+          document.getElementById("status_label").innerText = "Status: Offline";
+          document.getElementById("timer").innerText = "Time: --";
+          document.getElementById("pause_msg").innerText = "";
+          statusOnline = false;
+        }
+        console.error("Error updating:", e);
+      }
+    }
+
+    setInterval(updateTime, 2000);
+  </script>
+</body>
+</html>
