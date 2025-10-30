@@ -1,39 +1,231 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Ray's Rent System</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <!-- Material Design styles -->
-  <link href="https://cdn.jsdelivr.net/npm/@mdi/font/css/materialdesignicons.min.css" rel="stylesheet">
-  <link href="https://cdn.jsdelivr.net/npm/materialize-css@1.0.0/dist/css/materialize.min.css" rel="stylesheet">
-  <style>
-    body {
-      background-color: #fafafa;
-      margin: 0;
-      padding: 20px;
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RayRent</title>
+<link rel="icon" href="https://raw.githubusercontent.com/github/explore/main/topics/python/python.png">
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    background: #f5f5f5;
+    color: #222;
+    max-width: 450px;
+    margin: 20px auto;
+    padding: 20px;
+    border-radius: 12px;
+    box-shadow: 0 0 12px rgba(0,0,0,0.2);
+  }
+  h2 {
+    text-align: center;
+    margin-bottom: 10px;
+  }
+  .label {
+    margin: 8px 0;
+  }
+  input, button {
+    width: 100%;
+    padding: 10px;
+    margin: 6px 0;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+    font-size: 1em;
+  }
+  button {
+    background: #4a90e2;
+    color: white;
+    cursor: pointer;
+  }
+  button:hover {
+    background: #357ABD;
+  }
+  hr {
+    margin: 15px 0;
+    border: none;
+    border-top: 1px solid #ccc;
+  }
+  small {
+    color: #777;
+  }
+  .row {
+    display: flex;
+    gap: 6px;
+    margin: 6px 0;
+  }
+  .row input {
+    flex: 1;
+  }
+</style>
+</head>
+<body>
+  <h2>RayRent</h2>
+
+  <small>⚠️ If it's offline, make sure to run the timer on the PC!</small>
+
+  <div class="label" id="status_label">Status: Connecting...</div>
+  <div class="label" id="timer">Time: Loading...</div>
+  <div class="label" id="pause_msg"></div>
+  <div class="label" id="pause_history_label">Pause History:<br></div>
+
+  <hr>
+
+  <button onclick="generateCode()">🔑 Generate Connection Code</button>
+  <input type="password" id="password_input" placeholder="Enter Password from PC">
+  <button onclick="verifyPassword()">🔒 Connect to Timer</button>
+
+  <hr>
+
+  <button onclick="send('add_time', {minutes:10})">Add 10 Minutes</button>
+
+  <div class="row">
+    <input type="number" id="minInput" placeholder="Set Minutes">
+    <button onclick="setManual('minutes')">Set</button>
+  </div>
+
+  <div class="row">
+    <input type="number" id="hourInput" placeholder="Set Hours">
+    <button onclick="setManual('hours')">Set</button>
+  </div>
+
+  <hr>
+
+  <button onclick="send('set_money', {option:'250'})">💵 250 IQD → 1 Hour</button>
+  <button onclick="send('set_money', {option:'500'})">💰 500 IQD → 3 Hours</button>
+
+  <hr>
+
+  <button onclick="send('pause')">⏸ Pause</button>
+  <button onclick="send('unpause')">▶️ Unpause</button>
+  <button onclick="send('reset')">🔁 Reset Timer</button>
+
+<script>
+const SERVER_IP = "http://192.168.0.107:5000";
+let verified = false;
+let lastPauseMsg = "";
+let pauseHistory = [];
+let notifiedEnd = false;
+let statusOnline = false;
+
+async function generateCode() {
+  try {
+    const res = await fetch(`${SERVER_IP}/generate_code`, { method: "POST" });
+    const data = await res.json();
+    const code = data.code || "?";
+    document.getElementById("status_label").textContent = `Generated Code: ${code}`;
+    alert(`Connection Code: ${code}`);
+  } catch {
+    document.getElementById("status_label").textContent = "Status: Offline";
+  }
+}
+
+async function verifyPassword() {
+  const password = document.getElementById("password_input").value.trim();
+  if (!password) {
+    document.getElementById("status_label").textContent = "Status: Enter password!";
+    return;
+  }
+  try {
+    const res = await fetch(`${SERVER_IP}/verify`, {
+      method: "POST",
+      body: new URLSearchParams({ password })
+    });
+    const data = await res.json();
+    if (data.status === "success") {
+      verified = true;
+      document.getElementById("status_label").textContent = "✅ Connected to Timer";
+      alert("Successfully connected!");
+    } else {
+      document.getElementById("status_label").textContent = "❌ Wrong password!";
     }
-    .container {
-      max-width: 400px;
-      margin: auto;
-      background: white;
-      border-radius: 16px;
-      padding: 20px;
-      box-shadow: 0 3px 8px rgba(0,0,0,0.1);
+  } catch {
+    document.getElementById("status_label").textContent = "Status: Offline";
+  }
+}
+
+async function send(route, data = {}) {
+  if (!verified) {
+    document.getElementById("status_label").textContent = "🔒 Not verified!";
+    return;
+  }
+  try {
+    await fetch(`${SERVER_IP}/${route}`, {
+      method: "POST",
+      body: new URLSearchParams(data)
+    });
+  } catch {
+    document.getElementById("status_label").textContent = "Status: Offline";
+  }
+}
+
+function setManual(mode) {
+  if (!verified) {
+    document.getElementById("status_label").textContent = "🔒 Not verified!";
+    return;
+  }
+  if (mode === "minutes") {
+    const mins = document.getElementById("minInput").value;
+    if (mins) send("set_time", { minutes: mins });
+  } else if (mode === "hours") {
+    const hrs = document.getElementById("hourInput").value;
+    if (hrs) {
+      const mins = parseInt(hrs) * 60;
+      send("set_time", { minutes: mins });
     }
-    .status {
-      font-weight: bold;
-      text-align: center;
-      margin-bottom: 10px;
+  }
+}
+
+async function updateTime() {
+  if (!verified) return;
+  try {
+    const res = await fetch(`${SERVER_IP}/get_remaining_time`);
+    const data = await res.json();
+    const remaining = data.remaining;
+
+    document.getElementById("timer").textContent = `Time: ${remaining}`;
+    document.getElementById("status_label").textContent = "Status: Running";
+
+    const p = await fetch(`${SERVER_IP}/get_pause_requests`);
+    const pauseData = await p.json();
+    const requestsList = pauseData.requests || [];
+
+    if (requestsList.length > 0) {
+      const lastRequest = requestsList[requestsList.length - 1];
+      const pauseText = `Pause request: "${lastRequest}"`;
+      document.getElementById("pause_msg").textContent = pauseText;
+
+      if (lastRequest !== lastPauseMsg) {
+        lastPauseMsg = lastRequest;
+        const timestamp = new Date().toLocaleTimeString();
+        pauseHistory.push(`[${timestamp}] "${lastRequest}"`);
+        document.getElementById("pause_history_label").innerHTML =
+          "Pause History:<br>" + pauseHistory.join("<br>");
+        alert(`Pause Request: ${lastRequest}`);
+      }
+    } else {
+      document.getElementById("pause_msg").textContent = "";
     }
-    .timer {
-      font-size: 2em;
-      text-align: center;
-      margin: 10px 0;
+
+    if ((remaining === "0s" || remaining === "0m") && !notifiedEnd) {
+      alert("The client's time is over.");
+      notifiedEnd = true;
+    } else if (remaining !== "0s" && remaining !== "0m") {
+      notifiedEnd = false;
     }
-    .pause-msg {
-      text-align: center;
-      color: gray;
+    statusOnline = true;
+  } catch {
+    if (statusOnline) {
+      document.getElementById("status_label").textContent = "Status: Offline";
+      document.getElementById("timer").textContent = "Time: --";
+      document.getElementById("pause_msg").textContent = "";
+      statusOnline = false;
+    }
+  }
+}
+
+setInterval(updateTime, 2000);
+</script>
+</body>
+</html>
     }
     textarea {
       width: 100%;
