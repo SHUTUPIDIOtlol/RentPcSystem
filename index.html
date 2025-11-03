@@ -1,229 +1,88 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>PC → Phone Audio Stream (WebRTC)</title>
-  <style>
-    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 18px; max-width:800px; margin:auto; }
-    input, button { font-size:16px; padding:8px; margin:6px 0; }
-    .row { display:flex; gap:8px; align-items:center; }
-    .code { font-weight:700; font-size:20px; }
-    #status { margin-top:10px; color: #333; }
-    audio { width:100%; margin-top:12px; }
-    .hint { font-size:13px; color:#666; margin-top:6px; }
-  </style>
-</head>
-<body>
-  <h1>PC → Phone Audio Stream</h1>
-  <p>Stream PC audio to your phone by sharing a code. Use Chrome/Edge for best results.</p>
-
-  <div>
-    <label><input id="rolePC" type="radio" name="role" checked> This is the PC (share audio)</label><br>
-    <label><input id="rolePhone" type="radio" name="role"> This is the Phone (play audio)</label>
-  </div>
-
-  <div id="pcControls">
-    <button id="startStreamBtn">Start streaming (create code)</button>
-    <div class="hint">When you click Start streaming, choose the tab/screen and enable "Share system audio" if available.</div>
-    <div id="generatedCodeWrap" style="display:none; margin-top:8px;">Your code: <span id="generatedCode" class="code"></span></div>
-  </div>
-
-  <div id="phoneControls" style="display:none;">
-    <div class="row">
-      <input id="joinCodeInput" placeholder="Enter code" />
-      <button id="joinBtn">Connect</button>
-    </div>
-    <div class="hint">Enter the code shown on the PC.</div>
-    <audio id="remoteAudio" controls autoplay></audio>
-  </div>
-
-  <div id="status">Status: idle</div>
-
-  <!-- Firebase (compat) SDKs -->
-  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
-
-  <script>
-  // ====== CONFIGURE THIS ======
-  const firebaseConfig = {
-    // REPLACE with your Firebase project's config
-    apiKey: "YOUR_API_KEY",
-    authDomain: "YOUR_PROJECT.firebaseapp.com",
-    databaseURL: "https://YOUR_PROJECT.firebaseio.com",
-    projectId: "YOUR_PROJECT",
-    storageBucket: "YOUR_PROJECT.appspot.com",
-    messagingSenderId: "SENDER_ID",
-    appId: "APP_ID"
-  };
-  // ===========================
-
-  firebase.initializeApp(firebaseConfig);
-  const db = firebase.database();
-
-  // Simple helpers
-  function setStatus(s){ document.getElementById('status').innerText = "Status: " + s; }
-  function randNumeric(len = 6) {
-    let s = '';
-    for (let i=0;i<len;i++) s += Math.floor(Math.random()*10);
-    return s;
-  }
-
-  // DOM
-  const pcControls = document.getElementById('pcControls');
-  const phoneControls = document.getElementById('phoneControls');
-  const startStreamBtn = document.getElementById('startStreamBtn');
-  const generatedCodeWrap = document.getElementById('generatedCodeWrap');
-  const generatedCodeEl = document.getElementById('generatedCode');
-  const joinCodeInput = document.getElementById('joinCodeInput');
-  const joinBtn = document.getElementById('joinBtn');
-  const remoteAudio = document.getElementById('remoteAudio');
-  const rolePC = document.getElementById('rolePC');
-  const rolePhone = document.getElementById('rolePhone');
-
-  rolePC.addEventListener('change', updateRole);
-  rolePhone.addEventListener('change', updateRole);
-  function updateRole(){
-    if(rolePC.checked){ pcControls.style.display='block'; phoneControls.style.display='none'; }
-    else { pcControls.style.display='none'; phoneControls.style.display='block'; }
-  }
-
-  // WebRTC objects
-  let pc = null;
-  let localStream = null;
-  let code = null;
-  let listeners = [];
-
-  // Basic ICE servers - you can add a TURN server for better NAT traversal
-  const pcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
-
-  // Clean up Firebase path for a code
-  async function cleanupCodePath(code) {
-    try { await db.ref('calls/' + code).remove(); } catch(e){ console.warn(e); }
-  }
-
-  // PC: start streaming and create offer
-  startStreamBtn.addEventListener('click', async () => {
-    setStatus('requesting capture permission...');
-    try {
-      // getDisplayMedia is used to get system / tab audio (user must select share options)
-      localStream = await navigator.mediaDevices.getDisplayMedia({ video: false, audio: true });
-    } catch(err) {
-      setStatus('capture failed: ' + (err && err.message || err));
-      console.error(err);
-      return;
-    }
-
-    pc = new RTCPeerConnection(pcConfig);
-    // add audio tracks to pc
-    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-
-    // optional: show local stream (debug)
-    // create dummy local audio element if you want to monitor locally
-
-    pc.onicecandidate = (ev) => {
-      if(ev.candidate) {
-        // store ICE candidate under path so other peer can pick them up (optional)
-        const candRef = db.ref(`calls/${code}/pcCandidates`).push();
-        candRef.set(ev.candidate.toJSON());
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AudioConnect</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        background: #0d1117;
+        color: #c9d1d9;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        text-align: center;
       }
-    };
-
-    // Optional: listen for remote tracks (not needed for PC)
-    pc.ontrack = e => console.log('pc ontrack', e);
-
-    // generate code and write offer
-    code = randNumeric(6); // change length if you want fewer collisions
-    generatedCodeEl.innerText = code;
-    generatedCodeWrap.style.display = 'block';
-    setStatus('creating offer and writing to signaling...');
-
-    // remove any stale path
-    await cleanupCodePath(code);
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-
-    // write the offer to firebase
-    await db.ref(`calls/${code}/offer`).set({ sdp: offer.sdp, type: offer.type, createdAt: Date.now() });
-
-    // listen for answer
-    const answerRef = db.ref(`calls/${code}/answer`);
-    const answerListener = answerRef.on('value', async snap => {
-      const data = snap.val();
-      if(!data) return;
-      try {
-        await pc.setRemoteDescription({ type: data.type, sdp: data.sdp });
-        setStatus('connected! streaming audio (phone playing).');
-        // after connected, listen for phone ICE candidates
-        const phoneCandsRef = db.ref(`calls/${code}/phoneCandidates`);
-        phoneCandsRef.on('child_added', async (csnap) => {
-          const cand = csnap.val();
-          try { await pc.addIceCandidate(cand); } catch(e){ console.warn('addIceCandidate failed', e); }
-        });
-      } catch(e) {
-        console.error('setRemoteDescription failed', e);
+      h1 {
+        color: #58a6ff;
       }
-    });
-    listeners.push({ ref: answerRef, fn: answerListener });
-
-    setStatus('waiting for phone to join with code: ' + code);
-  });
-
-  // PHONE: join with code, fetch offer, create answer, play audio
-  joinBtn.addEventListener('click', async () => {
-    code = (joinCodeInput.value || '').trim();
-    if(!code){ setStatus('enter a code'); return; }
-    setStatus('looking up offer for code: ' + code);
-
-    const offerSnap = await db.ref(`calls/${code}/offer`).once('value');
-    const offer = offerSnap.val();
-    if(!offer){ setStatus('no offer found for that code'); return; }
-
-    pc = new RTCPeerConnection(pcConfig);
-
-    pc.ontrack = (ev) => {
-      // attach audio to element
-      if (remoteAudio.srcObject !== ev.streams[0]) {
-        remoteAudio.srcObject = ev.streams[0];
-        setStatus('playing audio from PC');
+      button {
+        background: #238636;
+        border: none;
+        color: white;
+        padding: 10px 20px;
+        margin-top: 10px;
+        border-radius: 8px;
+        cursor: pointer;
       }
-    };
-
-    pc.onicecandidate = (ev) => {
-      if(ev.candidate) {
-        const candRef = db.ref(`calls/${code}/phoneCandidates`).push();
-        candRef.set(ev.candidate.toJSON());
+      button:hover {
+        background: #2ea043;
       }
-    };
+      .status {
+        margin-top: 20px;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🔊 AudioConnect</h1>
+    <p>Connect your PC and phone using a password to stream audio.</p>
 
-    // set remote (pc's) offer then create + send answer
-    await pc.setRemoteDescription({ type: offer.type, sdp: offer.sdp });
-    // create an (empty) local audio track? Not needed; phone just receives audio.
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
+    <button id="testBtn">Test Firebase Connection</button>
+    <div class="status" id="status">Waiting...</div>
 
-    // write answer back
-    await db.ref(`calls/${code}/answer`).set({ type: answer.type, sdp: answer.sdp, createdAt: Date.now() });
+    <!-- Firebase SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
 
-    // listen for pcCandidates so we can add them to our pc
-    const pcCandsRef = db.ref(`calls/${code}/pcCandidates`);
-    pcCandsRef.on('child_added', async (snap) => {
-      const cand = snap.val();
-      try { await pc.addIceCandidate(cand); } catch(e){ console.warn('phone addIceCandidate failed', e); }
-    });
+    <script>
+      // --- Firebase configuration ---
+      const firebaseConfig = {
+        apiKey: "AIzaSyDvxd2850Ss8qcJF5NlZxHr39IrMPF3nx0",
+        authDomain: "audioconnect-5a079.firebaseapp.com",
+        databaseURL: "https://audioconnect-5a079-default-rtdb.firebaseio.com",
+        projectId: "audioconnect-5a079",
+        storageBucket: "audioconnect-5a079.firebasestorage.app",
+        messagingSenderId: "154293523219",
+        appId: "1:154293523219:web:4de5ee4eee0f7024a580e6",
+        measurementId: "G-VPK2Z6CBQH"
+      };
 
-    setStatus('answer written, connecting...');
-  });
+      // --- Initialize Firebase (compat SDK) ---
+      firebase.initializeApp(firebaseConfig);
+      const db = firebase.database();
 
-  // clean up on unload
-  window.addEventListener('beforeunload', async () => {
-    if(code) {
-      try { await cleanupCodePath(code); } catch(e) {}
-    }
-  });
+      const statusEl = document.getElementById("status");
+      const btn = document.getElementById("testBtn");
 
-  </script>
-</body>
+      // Test button: write to DB
+      btn.addEventListener("click", async () => {
+        try {
+          await db.ref("testConnection").set({
+            timestamp: new Date().toISOString(),
+            status: "connected",
+          });
+          statusEl.textContent = "✅ Firebase connected successfully!";
+        } catch (e) {
+          console.error(e);
+          statusEl.textContent = "❌ Firebase connection failed.";
+        }
+      });
+    </script>
+  </body>
 </html>
+
 
