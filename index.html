@@ -1,138 +1,229 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ray's Rent Control Panel</title>
-<style>
-    body { font-family: Arial, sans-serif; background: #1e1e1e; color: #fff; padding: 20px; }
-    h2 { color: #f0c040; }
-    label, input, button { display: block; margin: 10px 0; }
-    input { padding: 8px; width: 150px; }
-    button { padding: 10px; cursor: pointer; }
-    .status { margin: 10px 0; font-weight: bold; }
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PC → Phone Audio Stream (WebRTC)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 18px; max-width:800px; margin:auto; }
+    input, button { font-size:16px; padding:8px; margin:6px 0; }
+    .row { display:flex; gap:8px; align-items:center; }
+    .code { font-weight:700; font-size:20px; }
+    #status { margin-top:10px; color: #333; }
+    audio { width:100%; margin-top:12px; }
+    .hint { font-size:13px; color:#666; margin-top:6px; }
+  </style>
 </head>
 <body>
+  <h1>PC → Phone Audio Stream</h1>
+  <p>Stream PC audio to your phone by sharing a code. Use Chrome/Edge for best results.</p>
 
-<h2>Ray's Rent Control Panel</h2>
+  <div>
+    <label><input id="rolePC" type="radio" name="role" checked> This is the PC (share audio)</label><br>
+    <label><input id="rolePhone" type="radio" name="role"> This is the Phone (play audio)</label>
+  </div>
 
-<div class="status" id="status">Status: Not connected</div>
+  <div id="pcControls">
+    <button id="startStreamBtn">Start streaming (create code)</button>
+    <div class="hint">When you click Start streaming, choose the tab/screen and enable "Share system audio" if available.</div>
+    <div id="generatedCodeWrap" style="display:none; margin-top:8px;">Your code: <span id="generatedCode" class="code"></span></div>
+  </div>
 
-<label for="password">Enter Connection Code:</label>
-<input type="password" id="password" placeholder="Type code here">
+  <div id="phoneControls" style="display:none;">
+    <div class="row">
+      <input id="joinCodeInput" placeholder="Enter code" />
+      <button id="joinBtn">Connect</button>
+    </div>
+    <div class="hint">Enter the code shown on the PC.</div>
+    <audio id="remoteAudio" controls autoplay></audio>
+  </div>
 
-<button onclick="connect()">Connect</button>
+  <div id="status">Status: idle</div>
 
-<h3>Timer Controls</h3>
+  <!-- Firebase (compat) SDKs -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
 
-<div>
-    <button onclick="sendCommand('add_time', {minutes:10})">Add 10 Minutes</button>
-</div>
+  <script>
+  // ====== CONFIGURE THIS ======
+  const firebaseConfig = {
+    // REPLACE with your Firebase project's config
+    apiKey: "YOUR_API_KEY",
+    authDomain: "YOUR_PROJECT.firebaseapp.com",
+    databaseURL: "https://YOUR_PROJECT.firebaseio.com",
+    projectId: "YOUR_PROJECT",
+    storageBucket: "YOUR_PROJECT.appspot.com",
+    messagingSenderId: "SENDER_ID",
+    appId: "APP_ID"
+  };
+  // ===========================
 
-<div>
-    <input type="number" id="minInput" placeholder="Minutes">
-    <button onclick="setTime('minutes')">Set Minutes</button>
-</div>
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
 
-<div>
-    <input type="number" id="hourInput" placeholder="Hours">
-    <button onclick="setTime('hours')">Set Hours</button>
-</div>
+  // Simple helpers
+  function setStatus(s){ document.getElementById('status').innerText = "Status: " + s; }
+  function randNumeric(len = 6) {
+    let s = '';
+    for (let i=0;i<len;i++) s += Math.floor(Math.random()*10);
+    return s;
+  }
 
-<div>
-    <button onclick="sendCommand('set_money', {option:'250'})">💵 250 IQD → 1 Hour</button>
-    <button onclick="sendCommand('set_money', {option:'500'})">💰 500 IQD → 3 Hours</button>
-</div>
+  // DOM
+  const pcControls = document.getElementById('pcControls');
+  const phoneControls = document.getElementById('phoneControls');
+  const startStreamBtn = document.getElementById('startStreamBtn');
+  const generatedCodeWrap = document.getElementById('generatedCodeWrap');
+  const generatedCodeEl = document.getElementById('generatedCode');
+  const joinCodeInput = document.getElementById('joinCodeInput');
+  const joinBtn = document.getElementById('joinBtn');
+  const remoteAudio = document.getElementById('remoteAudio');
+  const rolePC = document.getElementById('rolePC');
+  const rolePhone = document.getElementById('rolePhone');
 
-<div>
-    <button onclick="sendCommand('pause')">⏸ Pause</button>
-    <button onclick="sendCommand('unpause')">▶️ Unpause</button>
-    <button onclick="sendCommand('reset')">🔁 Reset Timer</button>
-</div>
+  rolePC.addEventListener('change', updateRole);
+  rolePhone.addEventListener('change', updateRole);
+  function updateRole(){
+    if(rolePC.checked){ pcControls.style.display='block'; phoneControls.style.display='none'; }
+    else { pcControls.style.display='none'; phoneControls.style.display='block'; }
+  }
 
-<div>
-    <h3>Timer Status</h3>
-    <div id="timer">Time: --</div>
-    <div id="pause_msg"></div>
-</div>
+  // WebRTC objects
+  let pc = null;
+  let localStream = null;
+  let code = null;
+  let listeners = [];
 
-<script>
-let SERVER_IP = "http://192.168.0.107:5000"; // replace with your PC IP
+  // Basic ICE servers - you can add a TURN server for better NAT traversal
+  const pcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
-let connected = false;
+  // Clean up Firebase path for a code
+  async function cleanupCodePath(code) {
+    try { await db.ref('calls/' + code).remove(); } catch(e){ console.warn(e); }
+  }
 
-function connect() {
-    let password = document.getElementById("password").value.trim();
-    if(!password){
-        alert("Please type the connection code!");
-        return;
+  // PC: start streaming and create offer
+  startStreamBtn.addEventListener('click', async () => {
+    setStatus('requesting capture permission...');
+    try {
+      // getDisplayMedia is used to get system / tab audio (user must select share options)
+      localStream = await navigator.mediaDevices.getDisplayMedia({ video: false, audio: true });
+    } catch(err) {
+      setStatus('capture failed: ' + (err && err.message || err));
+      console.error(err);
+      return;
     }
-    fetch(`${SERVER_IP}/verify`, {
-        method: "POST",
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: `password=${password}`
-    })
-    .then(res => res.json())
-    .then(data => {
-        if(data.status === "success") {
-            connected = true;
-            document.getElementById("status").innerText = "✅ Connected to Timer";
-            startTimerUpdates();
-        } else {
-            document.getElementById("status").innerText = "❌ Wrong Code!";
-        }
-    })
-    .catch(err => {
-        document.getElementById("status").innerText = "⚠️ Cannot reach timer";
-        console.error(err);
+
+    pc = new RTCPeerConnection(pcConfig);
+    // add audio tracks to pc
+    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+    // optional: show local stream (debug)
+    // create dummy local audio element if you want to monitor locally
+
+    pc.onicecandidate = (ev) => {
+      if(ev.candidate) {
+        // store ICE candidate under path so other peer can pick them up (optional)
+        const candRef = db.ref(`calls/${code}/pcCandidates`).push();
+        candRef.set(ev.candidate.toJSON());
+      }
+    };
+
+    // Optional: listen for remote tracks (not needed for PC)
+    pc.ontrack = e => console.log('pc ontrack', e);
+
+    // generate code and write offer
+    code = randNumeric(6); // change length if you want fewer collisions
+    generatedCodeEl.innerText = code;
+    generatedCodeWrap.style.display = 'block';
+    setStatus('creating offer and writing to signaling...');
+
+    // remove any stale path
+    await cleanupCodePath(code);
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    // write the offer to firebase
+    await db.ref(`calls/${code}/offer`).set({ sdp: offer.sdp, type: offer.type, createdAt: Date.now() });
+
+    // listen for answer
+    const answerRef = db.ref(`calls/${code}/answer`);
+    const answerListener = answerRef.on('value', async snap => {
+      const data = snap.val();
+      if(!data) return;
+      try {
+        await pc.setRemoteDescription({ type: data.type, sdp: data.sdp });
+        setStatus('connected! streaming audio (phone playing).');
+        // after connected, listen for phone ICE candidates
+        const phoneCandsRef = db.ref(`calls/${code}/phoneCandidates`);
+        phoneCandsRef.on('child_added', async (csnap) => {
+          const cand = csnap.val();
+          try { await pc.addIceCandidate(cand); } catch(e){ console.warn('addIceCandidate failed', e); }
+        });
+      } catch(e) {
+        console.error('setRemoteDescription failed', e);
+      }
     });
-}
+    listeners.push({ ref: answerRef, fn: answerListener });
 
-function sendCommand(route, data={}) {
-    if(!connected){
-        alert("Please connect first!");
-        return;
+    setStatus('waiting for phone to join with code: ' + code);
+  });
+
+  // PHONE: join with code, fetch offer, create answer, play audio
+  joinBtn.addEventListener('click', async () => {
+    code = (joinCodeInput.value || '').trim();
+    if(!code){ setStatus('enter a code'); return; }
+    setStatus('looking up offer for code: ' + code);
+
+    const offerSnap = await db.ref(`calls/${code}/offer`).once('value');
+    const offer = offerSnap.val();
+    if(!offer){ setStatus('no offer found for that code'); return; }
+
+    pc = new RTCPeerConnection(pcConfig);
+
+    pc.ontrack = (ev) => {
+      // attach audio to element
+      if (remoteAudio.srcObject !== ev.streams[0]) {
+        remoteAudio.srcObject = ev.streams[0];
+        setStatus('playing audio from PC');
+      }
+    };
+
+    pc.onicecandidate = (ev) => {
+      if(ev.candidate) {
+        const candRef = db.ref(`calls/${code}/phoneCandidates`).push();
+        candRef.set(ev.candidate.toJSON());
+      }
+    };
+
+    // set remote (pc's) offer then create + send answer
+    await pc.setRemoteDescription({ type: offer.type, sdp: offer.sdp });
+    // create an (empty) local audio track? Not needed; phone just receives audio.
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+
+    // write answer back
+    await db.ref(`calls/${code}/answer`).set({ type: answer.type, sdp: answer.sdp, createdAt: Date.now() });
+
+    // listen for pcCandidates so we can add them to our pc
+    const pcCandsRef = db.ref(`calls/${code}/pcCandidates`);
+    pcCandsRef.on('child_added', async (snap) => {
+      const cand = snap.val();
+      try { await pc.addIceCandidate(cand); } catch(e){ console.warn('phone addIceCandidate failed', e); }
+    });
+
+    setStatus('answer written, connecting...');
+  });
+
+  // clean up on unload
+  window.addEventListener('beforeunload', async () => {
+    if(code) {
+      try { await cleanupCodePath(code); } catch(e) {}
     }
-    let formData = new URLSearchParams(data);
-    fetch(`${SERVER_IP}/${route}`, {
-        method: "POST",
-        body: formData
-    }).catch(err => console.error(err));
-}
+  });
 
-function setTime(mode){
-    let data = {};
-    if(mode === "minutes"){
-        let mins = document.getElementById("minInput").value;
-        if(mins) data.minutes = mins;
-    } else if(mode === "hours"){
-        let hrs = document.getElementById("hourInput").value;
-        if(hrs) data.minutes = hrs*60;
-    }
-    sendCommand("set_time", data);
-}
-
-function startTimerUpdates(){
-    setInterval(()=>{
-        fetch(`${SERVER_IP}/get_remaining_time`)
-        .then(res=>res.json())
-        .then(data=>{
-            document.getElementById("timer").innerText = "Time: "+data.remaining;
-        }).catch(err=>{
-            document.getElementById("status").innerText = "⚠️ Cannot reach timer";
-        });
-
-        fetch(`${SERVER_IP}/get_pause_requests`)
-        .then(res=>res.json())
-        .then(data=>{
-            if(data.requests && data.requests.length>0){
-                document.getElementById("pause_msg").innerText = "Pause request: "+data.requests.join(", ");
-            }
-        });
-    }, 2000);
-}
-</script>
-
+  </script>
 </body>
 </html>
+
